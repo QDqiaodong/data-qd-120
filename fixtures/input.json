@@ -1,0 +1,59 @@
+{
+  "items": [
+    "I1",
+    "I2",
+    "I3",
+    "I4"
+  ],
+  "annotators": [
+    "A",
+    "B",
+    "C"
+  ],
+  "labels": [
+    "positive",
+    "negative"
+  ],
+  "annotations": [
+    {
+      "item": "I1",
+      "annotator": "A",
+      "label": "positive"
+    },
+    {
+      "item": "I1",
+      "annotator": "B",
+      "label": "positive"
+    },
+    {
+      "item": "I1",
+      "annotator": "C",
+      "label": "positive"
+    },
+    {
+      "item": "I2",
+      "annotator": "A",
+      "label": "positive"
+    },
+    {
+      "item": "I2",
+      "annotator": "B",
+      "label": "negative"
+    },
+    {
+      "item": "I3",
+      "annotator": "A",
+      "label": "negative"
+    },
+    {
+      "item": "I3",
+      "annotator": "B",
+      "label": "negative"
+    },
+    {
+      "item": "I3",
+      "annotator": "C",
+      "label": "negative"
+    }
+  ]
+}
