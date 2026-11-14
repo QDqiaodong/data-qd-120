@@ -1,0 +1,17 @@
+{
+  "strategy_version": 1,
+  "targets": [
+    {"item": "I1", "target": 3},
+    {"item": "I2", "target": 3},
+    {"item": "I3", "target": 3},
+    {"item": "I4", "target": 2}
+  ],
+  "annotators": [
+    {"annotator": "A", "min_new_tasks": 0, "max_new_tasks": 3},
+    {"annotator": "B", "min_new_tasks": 0, "max_new_tasks": 3},
+    {"annotator": "C", "min_new_tasks": 0, "max_new_tasks": 3}
+  ],
+  "forbiddens": [
+    {"item": "I4", "annotator": "A"}
+  ]
+}

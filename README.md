@@ -47,6 +47,22 @@ cli.py 衔接数据链路。fixtures 为明确自制样例，代码与样例采�
 导出报告为 schema_version=2，带截止批次、提交顺序及每批源字节SHA256；原子替换发布，
 失败保留旧报告，数据库可在新进程中重开继续导入或导出。
 
+## 离线标注补采任务编排（v3）
+
+`plan-tasks --source <源JSON> --strategy <策略JSON> --output <报告>` 读取v1格式源与补采策略，
+只给缺口安排未标过且未禁配的人员，已有票计入目标、超额票不撤销，配额只统计新任务。可行性由
+带上下界的二分可行流精确判定（不用贪心），并在可行方案中最小化人员新任务数的峰值；输入顺序
+变化不改变任务单。无解时发布`status="infeasible"`状态报告（退出0、不含部分任务），附需求
+缺口与可按[数据契约](docs/contract.md)重建网络核对的最小割证书；协议错误退出2并保留旧报告。
+
+```sh
+# 策略含 strategy_version=1、每item目标、每人新任务上下限、禁配 item/annotator 对
+.venv/bin/label-agreement plan-tasks --source fixtures/input.json \
+  --strategy fixtures/strategy.sample.json --output run/plan.json
+```
+
+成功报告为 schema_version=3，含有序任务单、人员负载、最优峰值及两份输入的原字节SHA256。
+
 ## 业务与样例结果
 
 8项标注；A/B共同3项，Po=2/3、Pe=4/9、Kappa=2/5。I2平票、I4无票单列。

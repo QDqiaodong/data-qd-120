@@ -77,3 +77,94 @@ batch_id、批次源字节SHA256、提交时间），以及v1完整`result`。�
 分歧，这是预期行为。账本JSON同样走受限解析：<=8MB、拒绝重复JSON键与非有限数值。
 账本不承诺多进程并发写入或断电恢复，适用单操作者批处理边界。
 
+# 离线标注补采任务编排 v3（plan-tasks）
+
+在不改变v1默认CLI与账本命令的前提下新增`plan-tasks`子命令，读取现有格式源JSON（v1：
+items/annotators/labels/annotations）与策略JSON，仅为缺口安排**新任务**。仅使用Python标准库；
+两份输入都走`common.read`严格解析（<=8MB、拒绝重复JSON键与非有限数值），报告经`common.save`
+临时文件原子替换发布，失败保留旧报告。
+
+## 策略协议（strategy_version=1）
+
+策略JSON恰有四个顶层字段：
+
+- `strategy_version`：整数，当前固定为1；其他值整文件拒绝。
+- `targets`：非空有序数组，长度<=10000，每个名录item恰好一行。每行恰有`item`（合法标识且
+  引用源名录）与`target`（整数，0..10^9），重复item行即拒绝。
+- `annotators`：非空有序数组，长度<=50，每个名录annotator恰好一行。每行恰有`annotator`、
+  `min_new_tasks`、`max_new_tasks`，三个整数均在0..10^9；`min_new_tasks>max_new_tasks`为
+  矛盾边界，拒绝；重复annotator行拒绝。
+- `forbiddens`：数组（<=100000），每行恰有`item`与`annotator`，二者均须引用源名录；
+  重复禁配对拒绝。
+
+标识规则与v1完全一致（非空、无首尾空白/控制字符、<=128字符）。源JSON自身仍按v1严格校验：
+重复item/annotator决定、未知引用、未知label均退出2。策略中任何未知item/annotator引用、
+targets或annotators未完整覆盖名录、非整数或越界值，同样退出2且不写报告。
+
+## 缺口、配额与配对规则
+
+- 源中每个有效`(item,annotator)`决定计为一张已有票；item的已有票数为持票annotator集合大小。
+- item缺口`demand=max(0,target-已有票数)`。已有票超过目标的item不撤销任何票，缺口为0。
+- 可配人员：该item未持票且不在禁配对中的annotator。已持票者绝不重复安排，禁配对绝不安排，
+  每个`(item,annotator)`对在新任务单中最多出现一次。
+- annotator上下限只统计本轮新任务数，与已有票数无关。任何可行方案必须同时满足全部item缺口、
+  全部annotator上下限；求解器不得用贪心失败代替无解判定。
+- 目标：在所有可行方案中最小化单个annotator承担新任务数的最大值（最优峰值）。
+
+## 可行流网络与最优峰值（不枚举分配）
+
+可行性由带上下界的二分匹配流精确判定，不枚举任何完整分配方案。对候选峰值`p`（每个
+annotator有效新任务上限取`min(max_new_tasks,p)`）构造网络：
+
+- 节点：源S、汇T、每个annotator一个节点、每个item一个节点，以及变换用超源SS、超汇TT。
+- 边S→annotator：下界`min_new_tasks`，容量`min(max_new_tasks,p)`。
+- 边annotator→item：仅对可配对建边，下界0，容量1（天然保证每对至多一次）。
+- 边item→T：下界与容量都等于该item的`demand`（缺口必须恰好满足）。
+- 边T→S：容量取所有下界与缺口之和加1的充分大值，形成环流。
+
+上下界变换：对每条边u→v（下界l、容量c），残量容量取c-l；维护节点平衡
+`balance[v]+=l, balance[u]-=l`。变换后为`balance>0`的节点加SS→node边（容量balance），
+为`balance<0`的节点加node→TT边（容量-balance）。对SS/TT跑Dinic最大流：当且仅当最大流等于
+SS发出容量总和时，候选峰值可行。逻辑边的实际流量为`l+(c-l-残量容量)`，
+annotator→item上流量1即一条新任务。
+
+峰值二分区间为`[max(min_new_tasks), max(max_new_tasks)]`：区间上界先做一次完整可行性判定；
+不可行则整个实例无解，发布无解状态报告。可行时二分得到最小可行峰值，并在该峰值重建网络抽取
+任务单。因此调用次数为O(log A)次最大流，A为annotator数（<=50）；网络规模
+O(items+annotators+可配对)，支持千项规模。
+
+## 无解状态报告与最小割证书
+
+无解时正常发布报告（CLI退出0），`status="infeasible"`，不含任何部分任务（无tasks字段）。
+报告含：
+
+- `demand_summary`：总缺口、annotator下限之和、上限之和、尝试的峰值（即上界）。
+- `demand_gaps`：可配人数小于缺口的item清单，逐项给出目标、已有票、缺口、排序后的可配
+  annotator名单与短缺量，便于人工定位局部容量不足。
+- `mincut_certificate`：可按上文规则独立重建网络核对的割证书：
+  - `required_flow`/`achieved_flow`：SS要求的总流量与实际最大流，后者严格小于前者。
+  - `reachable_nodes`：在SS残量网络（仅走残量容量>0的边）上可达的全部节点，规范节点名为
+    `S`、`T`、`SS`、`TT`、`annotator:<id>`、`item:<id>`，按字典序排列。
+  - `cut_edges`：从可达侧跨到不可达侧的协议边，每条带kind、from、to、下界、容量、实际流量。
+  - `auxiliary_cut_edges`：同样跨割的SS/TT/T→S辅助边及其流量。
+  - 核对方式：重建同构网络并复算最大流后，对SS做残量BFS，所得割集的跨边容量总和等于
+    achieved_flow与required_flow之差；任何跨割边均满足from可达、to不可达。
+
+## 成功报告（schema_version=3）
+
+`status="planned"`，含两份输入的**原字节**SHA256（`source_sha256`、`strategy_sha256`）、
+`optimal_peak`、`totals`（demand与new_tasks）、`tasks`有序任务单（按item再annotator字典序，
+每行恰有item/annotator）、`annotator_loads`（每人已有票数、新任务数、上下限，按annotator
+排序）、`item_coverage`（每项目标、已有票、缺口、实际安排，按item排序）。
+
+确定性：所有集合遍历先排序，解只取决于输入内容；输入数组顺序（items/annotators/
+annotations/targets/annotators策略行/forbiddens的排列）变化不改变任务单与峰值。
+报告为可独立读取的JSON（sort_keys、allow_nan=False）。输出路径不得与任一输入相同，
+符号链接拒绝；同输入重跑产生字节相同的报告。
+
+## 边界与不做的事
+
+不撤销或改写已有票，不在线下发任务、不回写账本，不输出枚举的全部可行分配，不做加权或优先级
+目标（仅最小峰值），不支持名录外人员。单操作者批处理边界，不承诺并发发布或断电恢复。
+
+

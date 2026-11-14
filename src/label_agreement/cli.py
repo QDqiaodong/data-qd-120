@@ -5,6 +5,7 @@ from pathlib import Path
 from .common import read, save
 from .ledger import export_report, import_batch, init_ledger
 from .model import analyze
+from .scheduling import plan
 
 def run(source):
     data,digest=read(source)
@@ -43,12 +44,30 @@ def _run_ledger(argv):
     report=export_report(args.db,args.output,args.cutoff_batch_id)
     print(json.dumps(report,sort_keys=True,ensure_ascii=False,allow_nan=False));return 0
 
+def _run_schedule(argv):
+    parser=argparse.ArgumentParser(description=DESCRIPTION)
+    sub=parser.add_subparsers(dest='command',required=True)
+    sched=sub.add_parser('plan-tasks',help='orchestrate offline annotation tasks from source and strategy JSON')
+    sched.add_argument('--source',type=Path,required=True)
+    sched.add_argument('--strategy',type=Path,required=True)
+    sched.add_argument('--output',type=Path,required=True)
+    args=parser.parse_args(argv)
+    if args.output.resolve() in (args.source.resolve(),args.strategy.resolve()):
+        raise ValueError('output must differ from both inputs')
+    report=plan(args.source,args.strategy,args.output)
+    print(json.dumps(report,sort_keys=True,ensure_ascii=False,allow_nan=False));return 0
+
 def main(argv=None):
     argv=sys.argv[1:] if argv is None else argv
     if argv and argv[0] in ('ledger-init','ledger-import','ledger-export'):
         try:
             return _run_ledger(argv)
         except (ValueError,TypeError,KeyError,OSError,OverflowError,RecursionError,sqlite3.Error) as error:
+            return _fail(error)
+    if argv and argv[0]=='plan-tasks':
+        try:
+            return _run_schedule(argv)
+        except (ValueError,TypeError,KeyError,OSError,OverflowError,RecursionError) as error:
             return _fail(error)
     parser=argparse.ArgumentParser(description=DESCRIPTION)
     parser.add_argument('--source',type=Path,required=True)
