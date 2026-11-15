@@ -1,9 +1,36 @@
 # Annotation agreement v1
 
 为文本数据集整理人员检查分类标注一致性与覆盖缺口。输入包含显式items、annotators、labels名录和annotations。
-名录非空且唯一：items<=10000、annotators<=50、labels<=50，标识非空、无首尾空白/控制字符、<=128字符。
+名录非空且唯一：items<=1,000,000、annotators<=50、labels<=50，标识非空、无首尾空白/控制字符、<=128字符。
 每行annotation恰有item/annotator/label，全部引用须存在；同一item/annotator只允许一个决定，重复即拒绝。
-annotations<=20000。缺失用没有行表达，不是null标签，也不自动补negative。
+annotations<=20,000,000。缺失用没有行表达，不是null标签，也不自动补negative。
+默认v1合法输入上限为2 GiB（2^31字节，恰等2 GiB接受，超出即拒绝）；顶层字段与各数组可任意排序，
+annotations允许先于items/annotators/labels出现，引用与重复决定在校验阶段统一判定。
+
+## 流式解析、临时SQLite与内存边界（v1默认CLI）
+
+默认CLI（`--source/--output`）以流式管线处理v1源，独立CLI进程全程RSS<=128 MiB（含stdout）：
+
+- 解析：`tokens.py`提供缓冲式严格JSON分词器，按固定块（64 KiB）读取，单字符串/数字令牌有界，
+  永不整文件入内存。语法与`common.read`的标准库严格解码一致：拒绝`NaN/Infinity`、非有限数值、
+  UTF-8 BOM、文档根值之后的任何尾随字节（含空白）；重复JSON键在分层解析器的每个对象上拒绝。
+  源SHA-256随读随算，按**原始字节**计算，与历史口径完全一致。
+- 暂存：名录与票写入输出目录下的私有临时SQLite（`PRAGMA cache_size`约2 MiB、临时排序落盘、
+  可处置日志在内存），不把整名录、整票表或完整报告放进Python对象。annotators/labels至多50个
+  可驻留小集合；items走SQLite主键去重，票先入无约束暂存表，文档解析完成后再用SQL统一校验
+  未知item/annotator/label引用与重复`(item,annotator)`决定，因此“票先于名录”同样可校验。
+- 统计：覆盖率、逐item投票与两两混淆矩阵全部由SQL聚合/有序游标产出；任意时刻驻留状态以50人、
+  50标签为界。Po/Pe/Kappa仍用`Fraction`精确分数文本，labels未出现的类别保留0格；
+  Pe=1时Kappa输出`constant_identical_marginals`，无共同item时三项null，口径不变。
+- 报告：结构化流式写入器（`streaming.JsonWriter`）直接把报告写入私有暂存文件，输出字节与
+  `model.analyze`+`common.save`逐字节相同（sort_keys、indent=2、结尾一个LF），完整报告不入内存。
+- 发布：成功后`os.replace`原子替换；输入/输出同路径、输出符号链接仍拒绝。任何解析、校验、
+  暂存或输出写失败都保留旧报告，并清理临时SQLite与暂存文件。stdout只打印一行简短JSON摘要，
+  不回显报告正文。
+
+库入口`model.analyze(data)`（接收已解析dict）与其他子命令（账本、plan-tasks、build-corpus）
+的API与行为保持不变；8 MiB的`common.read`仍服务于这些既有路径。v1默认CLI改为流式管线，
+但报告schema（schema_version=1）、字段、排序、分数与哈希口径全部不变。
 
 每对标注者仅在两人都标过的item交集上计算混淆矩阵（行=left，列=right）、Po、Pe、Cohen Kappa。
 Po=相同标签数/n，Pe=sum(行边际*列边际)/n²，Kappa=(Po-Pe)/(1-Pe)。
@@ -19,6 +46,20 @@ A/C、B/C均共同2项且Kappa=1。没有真值，不把一致性说成正确率
 
 当前仅单标签名义分类，不支持跨度/序列标注、ordinal权重、多轮版本、裁决写回或在线标注界面。
 原创合成标签不代表真实用户观点或自动分类模型能力。
+
+## 资源测量方法
+
+资源测试（`tests/test_scale.py`，需`RUN_SCALE_TESTS=1`）构造恰2 GiB、含至少200万票的v1源，
+在Linux上以**独立CLI进程**运行并测量：
+
+- 峰值RSS：`subprocess`启动真实CLI并等待退出后，读取
+  `resource.getrusage(RUSAGE_CHILDREN).ru_maxrss`（Linux单位KiB）；每次测量用全新harness进程、
+  仅一个子进程，因此读数即该子进程峰值，不是累计值，预算128 MiB。
+- 不以退出码代替正确性：独立流式校验器（`tests/tools/streaming_validate.py`）在第二个独立进程中
+  重新按原始字节计算SHA-256、用自己的SQLite重算全部计数与统计，并以令牌流方式通读完整报告
+  （报告同样不整载入内存），逐项核对覆盖率、Po/Pe/Kappa、混淆零格、逐item投票、排序与源哈希；
+  任一不符即非零退出。超2 GiB源必须以退出2拒绝且不产生输出、不留暂存。
+
 
 # Annotation revision ledger v2（SQLite标注修订账本）
 

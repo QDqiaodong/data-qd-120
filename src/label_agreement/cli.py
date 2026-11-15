@@ -2,15 +2,15 @@ DESCRIPTION='Pairwise categorical annotation agreement with missingness accounti
 import argparse, json, sqlite3, sys
 from datetime import datetime, timezone
 from pathlib import Path
-from .common import read, save
 from .corpus import build_corpus, parse_seed
 from .ledger import export_report, import_batch, init_ledger
-from .model import analyze
 from .scheduling import plan
+from .streaming import StreamError, analyze_file
+from .tokens import StreamingJSONError
 
-def run(source):
-    data,digest=read(source)
-    return {'schema_version':1,'source_sha256':digest,'result':analyze(data)}
+def run(source, output):
+    """Streaming v1 entry point: bounded memory, atomic publication."""
+    return analyze_file(source, output)
 
 def _fail(error):
     print(str(error),file=sys.stderr);return 2
@@ -99,9 +99,10 @@ def main(argv=None):
     args=parser.parse_args(argv)
     try:
         if args.source.resolve()==args.output.resolve():raise ValueError('input and output must differ')
-        report=run(args.source);save(args.output,report)
-    except (ValueError,TypeError,KeyError,OSError,OverflowError,RecursionError) as error:
+        report_path=run(args.source,args.output)
+    except (ValueError,TypeError,KeyError,OSError,OverflowError,RecursionError,
+            sqlite3.Error,StreamingJSONError,StreamError) as error:
         return _fail(error)
-    print(json.dumps(report,sort_keys=True,ensure_ascii=False,allow_nan=False));return 0
+    print(json.dumps({'status':'published','report':str(report_path)},sort_keys=True));return 0
 
 if __name__=='__main__':raise SystemExit(main())
