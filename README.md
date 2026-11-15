@@ -63,6 +63,29 @@ cli.py 衔接数据链路。fixtures 为明确自制样例，代码与样例采�
 
 成功报告为 schema_version=3，含有序任务单、人员负载、最优峰值及两份输入的原字节SHA256。
 
+## 语料分片发布（v4 build-corpus）
+
+`build-corpus --source <v1源JSON> --corpus <语料JSON> --seed <整数> --output-root <目录>` 把
+标注源与`[{item,text,group}]`语料合成确定性`train/validation/test` JSONL。语料恰覆盖名录；
+只纳入至少两票且有严格多数者，其余逐项记排除原因（全名录与排除项都进manifest）。分片以
+“group相同或NFKC并折叠空白后的text相同”的传递闭包为整分量，按seed与分量最小item的SHA256
+稳定映射80/10/10桶；编码与桶界随manifest写明。
+
+版本按两份输入原字节与策略内容寻址，完整暂存验真后原子切换`CURRENT`；已有版本验真才复用，
+损坏拒绝。重启清理遗留暂存；并发发布不会暴露半成品、误删活跃暂存或回滚他人发布，失败保留
+上次完整版本。协议细节见 [数据契约](docs/contract.md)。
+
+```sh
+.venv/bin/label-agreement build-corpus --source fixtures/input.json \
+  --corpus fixtures/corpus.sample.json --seed 5 --output-root run/corpus
+```
+
+```
+run/corpus/
+├── CURRENT                       # 当前版本id
+└── versions/<id>/{train,validation,test}.jsonl + manifest.json
+```
+
 ## 业务与样例结果
 
 8项标注；A/B共同3项，Po=2/3、Pe=4/9、Kappa=2/5。I2平票、I4无票单列。

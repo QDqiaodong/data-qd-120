@@ -3,6 +3,7 @@ import argparse, json, sqlite3, sys
 from datetime import datetime, timezone
 from pathlib import Path
 from .common import read, save
+from .corpus import build_corpus, parse_seed
 from .ledger import export_report, import_batch, init_ledger
 from .model import analyze
 from .scheduling import plan
@@ -57,6 +58,24 @@ def _run_schedule(argv):
     report=plan(args.source,args.strategy,args.output)
     print(json.dumps(report,sort_keys=True,ensure_ascii=False,allow_nan=False));return 0
 
+def _run_corpus(argv):
+    parser=argparse.ArgumentParser(description=DESCRIPTION)
+    sub=parser.add_subparsers(dest='command',required=True)
+    build=sub.add_parser('build-corpus',help='build deterministic train/validation/test JSONL releases')
+    build.add_argument('--source',type=Path,required=True)
+    build.add_argument('--corpus',type=Path,required=True)
+    build.add_argument('--seed',required=True)
+    build.add_argument('--output-root',type=Path,required=True)
+    args=parser.parse_args(argv)
+    seed=parse_seed(args.seed)
+    if args.output_root.resolve() in (args.source.resolve(),args.corpus.resolve()):
+        raise ValueError('output root must differ from both inputs')
+    manifest=build_corpus(args.source,args.corpus,seed,args.output_root)
+    print(json.dumps({'command':'build-corpus','version':manifest['version'],
+                      'line_count':{split:manifest['files'][split]['line_count']
+                                    for split in sorted(manifest['files'])}},
+                     sort_keys=True,ensure_ascii=False,allow_nan=False));return 0
+
 def main(argv=None):
     argv=sys.argv[1:] if argv is None else argv
     if argv and argv[0] in ('ledger-init','ledger-import','ledger-export'):
@@ -67,6 +86,11 @@ def main(argv=None):
     if argv and argv[0]=='plan-tasks':
         try:
             return _run_schedule(argv)
+        except (ValueError,TypeError,KeyError,OSError,OverflowError,RecursionError) as error:
+            return _fail(error)
+    if argv and argv[0]=='build-corpus':
+        try:
+            return _run_corpus(argv)
         except (ValueError,TypeError,KeyError,OSError,OverflowError,RecursionError) as error:
             return _fail(error)
     parser=argparse.ArgumentParser(description=DESCRIPTION)

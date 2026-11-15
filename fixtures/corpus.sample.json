@@ -1,0 +1,6 @@
+[
+  {"item": "I1", "text": "Positive  example", "group": "topic-a"},
+  {"item": "I2", "text": "Positive example", "group": "topic-b"},
+  {"item": "I3", "text": "Negative example", "group": "topic-c"},
+  {"item": "I4", "text": "Unseen item", "group": "topic-d"}
+]

@@ -167,4 +167,117 @@ annotations/targets/annotators策略行/forbiddens的排列）变化不改变任
 不撤销或改写已有票，不在线下发任务、不回写账本，不输出枚举的全部可行分配，不做加权或优先级
 目标（仅最小峰值），不支持名录外人员。单操作者批处理边界，不承诺并发发布或断电恢复。
 
+# 语料分片构建 v4（build-corpus）
+
+在不改变v1默认CLI、账本与`plan-tasks`的前提下新增`build-corpus`子命令：把v1源JSON与语料JSON
+合成按item排序的`train/validation/test` JSONL，并以内容寻址的版本目录原子发布。仅使用Python
+标准库；源JSON仍走`common.read`（<=8MB、严格解析），语料JSON走同样的严格规则（拒绝重复键、
+非有限数值、非UTF-8），上限放宽到64MB（文本体量天然大于v1源）。
+
+```sh
+.venv/bin/label-agreement build-corpus --source fixtures/input.json \
+  --corpus fixtures/corpus.sample.json --seed 5 --output-root run/corpus
+```
+
+`--seed`是命令行文本参数：可选负号加十进制数字，禁止前导零（`0`除外）与前缀`+`，数字位数
+<=4000，避免把无界输入带进哈希材料。库入口`build_corpus(source, corpus, seed:int, root)`
+只接受真正的`int`。
+
+## 语料协议
+
+语料JSON是数组，每行恰有`item`、`text`、`group`：
+
+- `item`：非空标识，规则与v1一致（<=128字符、无首尾空白/控制字符），在数组内唯一，且必须
+  引用源名录；数组必须恰好覆盖源名录全部items（不多、不少、不重复）。
+- `text`、`group`：非空字符串；`text`必须能按UTF-8编码。仅由空白组成的`text`不算空串，
+  仍被接受，但规范化后为空串并参与分量合并（这是规范化定义的直接结果）。
+
+任何一行不合规、缺失/多余item、未知item、重复item或重复JSON键，整份语料拒绝，退出2，不写
+任何发布产物。
+
+## 纳入与排除
+
+逐item读取v1分析结果中的观察票：
+
+- 观察票数为0：排除，`no_votes`。
+- 观察票数为1：排除，`fewer_than_two_votes`。
+- 观察票数>=2但没有任何标签严格超过半数（含平票与1-1-1）：排除，`no_strict_majority`。
+- 否则纳入，标签取该严格多数标签（`consensus`）。
+
+“严格多数”沿用v1口径`count*2>n`。纳入不需标注者数量门槛、不做质量加权。名录中每个item都出现
+在manifest的`items`表里：纳入项带`label`与`included=true`，排除项带`exclusion_reason`与
+`included=false`，并另列于`exclusions`（含item、观察票数、原因、所属分量与分片）。
+
+## 分量与80/10/10分片
+
+关系“group相同（原字节精确相等）或规范化text相同”按并查集求**传递闭包**；每个连通分量整体
+进入同一个分片，因此一个分量内的纳入项与排除项不会跨分片。
+
+text规范化：先做Unicode NFKC，再按Unicode空白切分并以单个ASCII空格连接（折叠空白、去首尾
+空白）。NFKC不折叠大小写。
+
+分量以字典序最小item为键，稳定映射到分片。编码与桶界（同时写入manifest的`policy`）：
+
+- 材料：UTF-8字节`b"build-corpus/1"`、NUL、seed的ASCII十进制（库内为标准十进制，负号保留）、
+  NUL、最小item的UTF-8字节。NUL分隔使`seed=12,item="3"`与`seed=1,item="23"`不会碰撞。
+- `v`：`SHA-256(材料)`前8字节按无符号大端整数，范围`[0, 2^64)`。
+- `train`：`v*100 < 80*2^64`；`validation`：`80*2^64 <= v*100 < 90*2^64`；`test`：
+  `v*100 >= 90*2^64`。
+- 整数比较避免浮点边界误差；空分量文件合法（0行，`sha256`为空串哈希）。
+
+分片归属只取决于seed与分量最小item，输入数组顺序变化不改变归属。
+
+## 输出与manifest
+
+每个版本目录含四个文件：`train.jsonl`、`validation.jsonl`、`test.jsonl`、`manifest.json`。
+
+JSONL：UTF-8，每行恰有`item`/`text`/`label`，键按字典序、紧凑分隔符，行按item码点升序，
+每行一个LF且文件以LF结尾。`text`保留语料原始字节内容，不做规范化改写。
+
+`manifest.json`（`schema_version=4`、`command="build-corpus"`）按`sort_keys`、`indent=2`
+写出一行结尾LF，包含：
+
+- `version`：内容寻址id（见下）、`seed`、`source_sha256`、`corpus_sha256`（均为**原字节**SHA256）。
+- `policy`：完整策略载荷（版本化规则、规范化定义、split编码与桶界、输出编码、版本规则），参与
+  版本id计算，因此策略内容变化必然换版本。
+- `counts`：名录总数、纳入/排除数、分量数、各分片行数。
+- `files`：每个分片的`path`、`sha256`、`line_count`。
+- `components`：按分量序号，含`minimum_item`、`split`、`items`、`included_items`、
+  `excluded_items`。
+- `items`：按item排序，每行含`vote_count`、`label`（排除为null）、`included`、
+  `exclusion_reason`（纳入为null）、`component`、`component_minimum_item`、`split`。
+- `exclusions`：全部排除项及原因。
+
+## 版本、复用与原子发布
+
+版本id = `SHA-256(canonical JSON {'policy','source_sha256','corpus_sha256'})`，规范JSON为
+`sort_keys`、紧凑分隔符、UTF-8。同输入字节与同策略必须同id；源或语料任一字节、seed或策略
+载荷变化都换id。
+
+发布根目录布局：`versions/<id>/`、`staging/`（私有暂存）、`CURRENT`（内容为版本id加一个LF）、
+`.build-corpus.lock`（`flock`排他锁）。流程：
+
+1. 解析两份输入并计算全部字节（不触碰发布根）。
+2. 在锁内清理遗留`stage-*`与`.CURRENT-*`临时文件。
+3. 目标版本已存在：逐字节验真后复用，不重写文件。验真包括目录名=manifest.version=由内容
+   重算的id、恰好四个文件、每文件SHA256/行数与行内容、排序/唯一性、与manifest纳入清单一致、
+   计数一致；任一项失败即拒绝（不“修复”），退出2。
+4. 目标不存在：写入`staging/stage-*`，写完fsync并验真，再`os.rename`到`versions/<id>`
+   （同一文件系统内的原子改名），fsync目录，最后以临时文件+`os.replace`原子切换`CURRENT`。
+
+锁覆盖从暂存清理到`CURRENT`切换的全过程，因此两个发布进程交错时：不会暴露半成品（`CURRENT`
+只会指向已完整落盘且验真的版本）、不会误删别人的活跃暂存、不会把他人已完成的发布回滚为旧指针。
+若在写文件、落manifest或切指针前失败/崩溃，`CURRENT`仍指向上次完整版本（或首次构建时不存在），
+重启后清除暂存并在下一次成功构建时恢复；已落盘的完整版本可直接复用。
+
+## 确定性、失败与边界
+
+同输入字节、同seed、同策略重跑，版本目录字节与`CURRENT`一致；置换源/语料数组顺序不改变item
+归属与分片文件内容，但会改变输入字节哈希与版本id（这是内容寻址的预期行为）。失败退出2，保留
+上次完整发布；成功后不累加。输出根、`versions`、`staging`、`CURRENT`与锁文件均拒绝符号链接。
+
+不做：不去重文本、不改写语料文本、不自动扩部分量、不做分层抽样比例外的重分配、不训练模型；
+不承诺跨文件系统原子改名（`versions`与`staging`必须同一根目录内），不提供断点续传。
+
+
 
